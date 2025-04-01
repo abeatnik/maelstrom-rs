@@ -1,6 +1,8 @@
-use maelstrom_rs::echo::EchoServer;
+use maelstrom_rs::node::Node;
+use maelstrom_rs::broadcast::Broadcast;
+
 
 fn main() {
-    let mut server = EchoServer::new();
-    server.main();
+    let mut broadcast = Broadcast::new();
+    broadcast.node.main();
 }
