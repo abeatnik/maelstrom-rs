@@ -3,17 +3,6 @@ use serde::{Deserialize,Serialize};
 use serde_json::{Value,json};
 
 
-#[derive(Debug, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-enum MessageType {
-    Init,
-    InitOk,
-    Echo,
-    EchoOk,
-    #[serde(other)]
-    Unknown,
-}
-
 #[derive(Debug, Deserialize)]
 struct Message {
     src : String,
@@ -37,52 +26,38 @@ impl Message {
 
 
 #[derive(Debug, Deserialize, Serialize)]
-struct Body {
-    msg_id : u32,
-    #[serde(rename = "type")]
-    msg_type: MessageType,
-    node_id: String,
-    #[serde(default)] 
-    node_ids: Vec<String>,
-}
-
-
-#[derive(Debug, Deserialize, Serialize)]
-enum RequestBody {
-    Init {
-        #[serde(flatten)]
-        body: Body,
-    },
-    Echo {
-        #[serde(flatten)]
-        body: Body,
-        echo : String,
-    },
-}
-
-
-#[derive(Debug, Deserialize, Serialize)]
-enum ReplyBody {
-    InitOk {
-        #[serde(flatten)]
-        body: Body,
-        in_reply_to : u32,
-    },
-    EchoOk {
-        #[serde(flatten)]
-        body: Body,
-        in_reply_to : u32,
-        echo : String,
-    },
-}
-
-
-#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "type")]
 enum MessageBody {
-    Request(RequestBody),
-    Response(ReplyBody),
-}
+    #[serde(rename = "init")]
+    RequestInit {
+        msg_id : u32,
+        node_id: String,
+        #[serde(default)] 
+        node_ids: Vec<String>,
+    },
 
+    #[serde(rename = "echo")]
+    RequestEcho {
+        msg_id : u32,
+        echo: String,
+    },
+
+    #[serde(rename = "init_ok")]
+    ResponseInitOk {
+        msg_id : u32,
+        node_id: String,
+        #[serde(default)] 
+        node_ids: Vec<String>,
+        in_reply_to: u32,
+    },
+
+    #[serde(rename = "echo_ok")]
+    ResponseEchoOk {
+        msg_id : u32,
+        in_reply_to: u32,
+        echo: String,
+    },
+}
 
 
 pub struct EchoServer {
@@ -105,52 +80,38 @@ impl EchoServer {
         let mut stderr = io::stderr();
 
         writeln!(stderr, "Received {:?}", request).expect("Failed to write to stderr");
-
-        if let MessageBody::Request(req) = request.body {
-            match req {
-                RequestBody::Init {body} => {
-                    if body.msg_type == MessageType::Init {
-                        self.node_id = Some(body.node_id.clone());
-                        self.node_ids = body.node_ids.into_iter().map(Some).collect();
-                        writeln!(stderr, "Initialized node {}", body.node_id).expect("Failed to write to stderr");
+            match request.body {
+                MessageBody::RequestInit {msg_id,node_id, node_ids} => {
+                        self.node_id = Some(node_id.clone());
+                        self.node_ids = node_ids.into_iter().map(Some).collect();
+                        writeln!(stderr, "Initialized node {}", node_id).expect("Failed to write to stderr");
                         self.next_msg_id += 1;
                         let init_response = Message{
                             src : request.dest,
                             dest : request.src,
-                            body : MessageBody::Response(ReplyBody::InitOk{ 
-                                in_reply_to: body.msg_id, 
-                                body: Body {
-                                    msg_id: self.next_msg_id, 
-                                    msg_type: MessageType::InitOk, 
+                            body : MessageBody::ResponseInitOk{ 
+                                in_reply_to: msg_id, 
+                                    msg_id: self.next_msg_id,  
                                     node_id:  self.node_id.clone().unwrap(), 
                                     node_ids : self.node_ids.clone().into_iter().filter_map(|x| x).collect(),
-                                    }
-                                })
+                                }
                         };
                         init_response.send();
-                    }
-                },
-                RequestBody::Echo {body, echo} => {
+                    },
+                MessageBody::RequestEcho {msg_id, echo} => {
                         if Some(request.dest.as_str()) == self.node_id.as_deref(){
                             writeln!(stderr, "Echoing: {}", &echo).expect("Failed to write to stderr");
                             self.next_msg_id +=1;
                             let echo_response = Message{
                                 src : request.dest.clone(),
                                 dest : request.src.clone(),
-                                body : MessageBody::Response(ReplyBody::EchoOk{ 
-                                    in_reply_to: body.msg_id, 
+                                body : MessageBody::ResponseEchoOk { 
+                                    in_reply_to: msg_id, 
                                     echo,
-                                    body: Body {
-                                        msg_id: self.next_msg_id, 
-                                        msg_type: MessageType::EchoOk, 
-                                        node_id: self.node_id.clone().unwrap(), 
-                                        node_ids : self.node_ids.clone().into_iter().filter_map(|x| x).collect(),
-                                        }
-                                    })
+                                    msg_id: self.next_msg_id, 
+                                    }
                             };
                             echo_response.send();
-                        } else {
-                            writeln!(stderr, "Cannot echo message type: {:?}", body.msg_type).expect("Failed to write to stderr");
                         }
                 },
                 _ => {
@@ -158,7 +119,7 @@ impl EchoServer {
                 },
             }
         }
-    }
+    
 
 
     pub fn main(&mut self){
