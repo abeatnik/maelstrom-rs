@@ -1,15 +1,14 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::io::{self, Write, BufRead};
-use std::thread;
-use serde::{Deserialize,Serialize};
-use serde_json::{Value,json};
+use serde_json::json;
 
 use crate::message::{MessageBody, Message};
 
 pub struct Node {
     pub node_id : Option<String>,
-    pub next_msg_id : u32,
+    pub next_msg_id : AtomicU64,
     pub node_ids: Vec<Option<String>>,
 
     handlers : Arc<Mutex<HashMap<String, Arc<Mutex<Box<dyn Fn(&mut Node, Message) -> Result<(), String> + Send>>>>>>,
@@ -24,7 +23,7 @@ impl Node {
         let mut node = Self {
             node_id : None,
             node_ids: vec![],
-            next_msg_id : 0,
+            next_msg_id : AtomicU64::new(0),
             handlers : Arc::new(Mutex::new(HashMap::new())),
             lock : Mutex::new(()),
             log_lock : Mutex::new(()),
@@ -76,17 +75,22 @@ impl Node {
         }
     }
 
+    pub fn increased_next_msg_id_and_return(&mut self) -> u64 {
+        self.next_msg_id.fetch_add(1, Ordering::Relaxed);
+        self.next_msg_id.load(Ordering::Relaxed)
+    }
+
     fn add_init_handler(&mut self) {
         self.on("init".to_string(), | node: &mut Node, req: Message|{
             match req.body {
-                MessageBody::RequestInit { msg_id, node_id, node_ids } => {
+                MessageBody::Init { msg_id, node_id, node_ids } => {
                     node.node_id = Some(node_id.clone());
                     node.node_ids = node_ids.into_iter().map(Some).collect();
                     node.log(format!("Initialized node {}", node_id));
-                    node.next_msg_id += 1;
-                    let body = MessageBody::ResponseInitOk{ 
+                    let new_msg_id = node.increased_next_msg_id_and_return();
+                    let body = MessageBody::InitOk{ 
                             in_reply_to: msg_id, 
-                                msg_id: node.next_msg_id,  
+                                msg_id: new_msg_id,  
                                 node_id:  node.node_id.clone().unwrap(), 
                                 node_ids : node.node_ids.clone().into_iter().filter_map(|x| x).collect(),
                             };
@@ -104,14 +108,14 @@ impl Node {
     fn add_echo_handler(&mut self){
         self.on("echo".to_string(), |node: &mut Node, req: Message|{
             match req.body {
-                MessageBody::RequestEcho { msg_id, echo } => {
+                MessageBody::Echo { msg_id, echo } => {
                     if Some(req.dest.as_str()) == node.node_id.as_deref(){
                         node.log(format!("Echoing: {}", &echo));
-                        node.next_msg_id +=1;
-                        let body =  MessageBody::ResponseEchoOk { 
+                        let new_msg_id = node.increased_next_msg_id_and_return();
+                        let body =  MessageBody::EchoOk { 
                                 in_reply_to: msg_id, 
                                 echo,
-                                msg_id: node.next_msg_id, 
+                                msg_id: new_msg_id, 
                                 };
                         node.send(req.src, body);
                     } 
@@ -127,8 +131,7 @@ impl Node {
     }
 
     pub fn main(&mut self){
-        let mut stdin = io::stdin();
-
+        let stdin = io::stdin();
         for line in stdin.lock().lines(){
             match line {
                 Ok(input) => {

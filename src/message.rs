@@ -12,60 +12,87 @@ pub struct Message {
 impl Message {
     pub fn msg_type(&self) -> &str {
         match &self.body {
-            MessageBody::RequestInit { .. } => "init",
-            MessageBody::RequestEcho { .. } => "echo", 
-            MessageBody::RequestTopology { .. } => "topology",
-            MessageBody::ResponseInitOk { .. } => "init_ok",
-            MessageBody::ResponseEchoOk { .. } => "echo_ok",
-            MessageBody::ResponseTopologyOk {.. } => "topology_ok",
+            MessageBody::Init { .. } => "init",
+            MessageBody::Echo { .. } => "echo",  
+            MessageBody::Topology { .. } => "topology",
+            MessageBody::Read { ..} => "read",
+            MessageBody::Broadcast { ..} => "broadcast",
+            MessageBody::InitOk { .. } => "init_ok",
+            MessageBody::EchoOk { .. } => "echo_ok",
+            MessageBody::TopologyOk {.. } => "topology_ok",
+            MessageBody::ReadOk { .. } => "read",
+            MessageBody::BroadcastOk {.. } => "broadcast_ok",
         }
     }
 }
-
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum MessageBody {
     #[serde(rename = "init")]
-    RequestInit {
-        msg_id : u32,
+    Init {
+        msg_id : u64,
         node_id: String,
         #[serde(default)] 
         node_ids: Vec<String>,
     },
 
     #[serde(rename = "echo")]
-    RequestEcho {
-        msg_id : u32,
+    Echo {
+        msg_id : u64,
         echo: String,
     },
 
     #[serde(rename = "topology")]
-    RequestTopology {
-        msg_id : u32,
+    Topology {
+        msg_id : u64,
         topology : HashMap<String, Vec<String>>,
     },
 
+    #[serde(rename="read")]
+    Read {
+        msg_id : u64,
+    },
+    
+    #[serde(rename = "broadcast")]
+    Broadcast {
+        msg_id : Option<u64>,
+        message : u64,
+    },
+
     #[serde(rename = "init_ok")]
-    ResponseInitOk {
-        msg_id : u32,
+    InitOk {
+        msg_id : u64,
         node_id: String,
         #[serde(default)] 
         node_ids: Vec<String>,
-        in_reply_to: u32,
+        in_reply_to: u64,
     },
 
     #[serde(rename = "echo_ok")]
-    ResponseEchoOk {
-        msg_id : u32,
-        in_reply_to: u32,
+    EchoOk {
+        msg_id : u64,
+        in_reply_to: u64,
         echo: String,
     },
 
     #[serde(rename = "topology_ok")]
-    ResponseTopologyOk {
-        msg_id : u32,
-        in_reply_to: u32,
+    TopologyOk {
+        msg_id : u64,
+        in_reply_to: u64,
+    },
+
+    #[serde(rename="read_ok")]
+    ReadOk {
+        msg_id : u64,
+        messages : Vec<u64>,
+        in_reply_to: u64,
+    },
+
+    #[serde(rename = "broadcast_ok")]
+    BroadcastOk {
+        msg_id : u64,
+        in_reply_to: u64,
     }
 }
 
