@@ -1,5 +1,5 @@
 use serde::{Deserialize,Serialize};
-
+use std::collections::HashMap;
 
 #[derive(Debug, Deserialize)]
 pub struct Message {
@@ -14,8 +14,10 @@ impl Message {
         match &self.body {
             MessageBody::RequestInit { .. } => "init",
             MessageBody::RequestEcho { .. } => "echo", 
+            MessageBody::RequestTopology { .. } => "topology",
             MessageBody::ResponseInitOk { .. } => "init_ok",
             MessageBody::ResponseEchoOk { .. } => "echo_ok",
+            MessageBody::ResponseTopologyOk {.. } => "topology_ok",
         }
     }
 }
@@ -38,6 +40,12 @@ pub enum MessageBody {
         echo: String,
     },
 
+    #[serde(rename = "topology")]
+    RequestTopology {
+        msg_id : u32,
+        topology : HashMap<String, Vec<String>>,
+    },
+
     #[serde(rename = "init_ok")]
     ResponseInitOk {
         msg_id : u32,
@@ -53,4 +61,12 @@ pub enum MessageBody {
         in_reply_to: u32,
         echo: String,
     },
+
+    #[serde(rename = "topology_ok")]
+    ResponseTopologyOk {
+        msg_id : u32,
+        in_reply_to: u32,
+    }
 }
+
+

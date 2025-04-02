@@ -8,9 +8,9 @@ use serde_json::{Value,json};
 use crate::message::{MessageBody, Message};
 
 pub struct Node {
-    node_id : Option<String>,
-    next_msg_id : u32,
-    node_ids: Vec<Option<String>>,
+    pub node_id : Option<String>,
+    pub next_msg_id : u32,
+    pub node_ids: Vec<Option<String>>,
 
     handlers : Arc<Mutex<HashMap<String, Arc<Mutex<Box<dyn Fn(&mut Node, Message) -> Result<(), String> + Send>>>>>>,
     lock: Mutex<()>,      // synchronized message sending
@@ -36,13 +36,13 @@ impl Node {
         node
     }
 
-    fn log(&self, message: String){
+    pub fn log(&self, message: String){
         let mut stderr = io::stderr();
         let _lock = self.log_lock.lock().unwrap();
         writeln!(stderr,"{}", message).unwrap();
     }
 
-    fn send(&self, dest: String, body: MessageBody){
+    pub fn send(&self, dest: String, body: MessageBody){
         let mut stdout= io::stdout(); 
         let _lock = self.lock.lock().unwrap();
         let message = json!({
@@ -56,7 +56,7 @@ impl Node {
 
     }
 
-    fn on<F>(&mut self, message_type: String, handler: F)
+    pub fn on<F>(&mut self, message_type: String, handler: F)
     where
         F: Fn(&mut Node, Message) -> Result<(), String> + Send + 'static,
     {
