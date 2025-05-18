@@ -1,159 +1,100 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::io::{self, Write, BufRead};
-use std::thread;
-use serde::{Deserialize,Serialize};
-use serde_json::{Value,json};
+use std::sync::{ Arc, Mutex };
+use std::io::{ self, Write, BufRead };
+use serde_json::json;
 
-use crate::message::{MessageBody, Message};
+use crate::message::{ Message, MessageBody };
+use crate::handlers::{ InitHandler, EchoHandler };
 
-pub struct Node {
-    pub node_id : Option<String>,
-    pub next_msg_id : u32,
-    pub node_ids: Vec<Option<String>>,
-
-    handlers : Arc<Mutex<HashMap<String, Arc<Mutex<Box<dyn Fn(&mut Node, Message) -> Result<(), String> + Send>>>>>>,
-    lock: Mutex<()>,      // synchronized message sending
-    log_lock: Mutex<()>,  // synchronized logging
+pub trait MessageHandler<C>: Send + Sync {
+    fn handle(&self, node: &mut Node<C>, msg: Message) -> Result<(), String>;
 }
 
+type HandlerMap<C> = Arc<Mutex<HashMap<String, Arc<dyn MessageHandler<C>>>>>;
 
-impl Node {
-    pub fn new() -> Self {
+pub struct Node<C> {
+    pub node_id: Option<String>,
+    pub next_msg_id: u32,
+    pub node_ids: Vec<Option<String>>,
+    handlers: HandlerMap<C>,
+    pub ctx: C,
+}
 
+impl<C> Node<C> {
+    pub fn new(ctx: C) -> Self {
         let mut node = Self {
-            node_id : None,
+            node_id: None,
+            next_msg_id: 0,
             node_ids: vec![],
-            next_msg_id : 0,
-            handlers : Arc::new(Mutex::new(HashMap::new())),
-            lock : Mutex::new(()),
-            log_lock : Mutex::new(()),
+            handlers: Arc::new(Mutex::new(HashMap::new())),
+            ctx,
         };
 
-        node.add_init_handler();
-        node.add_echo_handler();
+        node.register_handler("init", InitHandler {});
+        node.register_handler("echo", EchoHandler {});
 
         node
     }
 
-    pub fn log(&self, message: String){
-        let mut stderr = io::stderr();
-        let _lock = self.log_lock.lock().unwrap();
-        writeln!(stderr,"{}", message).unwrap();
+    pub fn register_handler<T: MessageHandler<C> + 'static>(&mut self, msg_type: &str, handler: T) {
+        let mut handlers = self.handlers.lock().unwrap();
+        handlers.insert(msg_type.to_string(), Arc::new(handler));
     }
 
-    pub fn send(&self, dest: String, body: MessageBody){
-        let mut stdout= io::stdout(); 
-        let _lock = self.lock.lock().unwrap();
-        let message = json!({
-                "src": self.node_id,
-                "dest": dest,
-                "body": body,
-            });
+    pub fn log(&self, message: impl AsRef<str>) {
+        let mut stderr = io::stderr().lock();
+        writeln!(stderr, "{}", message.as_ref()).unwrap();
+        stderr.flush().unwrap();
+    }
+
+    pub fn send(&self, dest: String, body: MessageBody) {
+        let mut stdout = io::stdout().lock();
+        let message =
+            json!({
+            "src": self.node_id,
+            "dest": dest,
+            "body": body,
+        });
         let json_string = serde_json::to_string(&message).unwrap();
         writeln!(stdout, "{}", json_string).unwrap();
         stdout.flush().unwrap();
-
     }
 
-    pub fn on<F>(&mut self, message_type: String, handler: F)
-    where
-        F: Fn(&mut Node, Message) -> Result<(), String> + Send + 'static,
-    {
-        let mut handlers = self.handlers.lock().unwrap();
-        handlers.insert(message_type, Arc::new(Mutex::new(Box::new(handler))));
-
-    }
-
-    fn handle(&self, message_type: String)-> Option<Arc<Mutex<Box<dyn Fn(&mut Node, Message) -> Result<(), std::string::String> + Send>>>>{
-        let handlers = self.handlers.lock().unwrap();
-        if let Some(handler) =  handlers.get(&message_type){
-            let _lock = self.lock.lock().unwrap(); // ensures that only one thread logs at a time
-            Some(handler.clone())
+    fn handle_message(&mut self, msg: Message) {
+        let msg_type = msg.msg_type().to_string();
+        let handler_opt = {
+            let handlers = self.handlers.lock().unwrap();
+            handlers.get(&msg_type).cloned()
+        };
+        if let Some(handler) = handler_opt {
+            if let Err(e) = handler.handle(self, msg) {
+                self.log(format!("Handler error: {}", e));
+            }
         } else {
-            self.log(format!("Handler does not exist for message_type: {}", message_type));
-            None
+            let ignored = ["broadcast_ok", "read_ok", "init_ok", "echo_ok", "topology_ok"];
+            if !ignored.contains(&msg_type.as_str()) {
+                self.log(format!("No handler for message type: {}", msg_type));
+            }
         }
     }
 
-    fn add_init_handler(&mut self) {
-        self.on("init".to_string(), | node: &mut Node, req: Message|{
-            match req.body {
-                MessageBody::RequestInit { msg_id, node_id, node_ids } => {
-                    node.node_id = Some(node_id.clone());
-                    node.node_ids = node_ids.into_iter().map(Some).collect();
-                    node.log(format!("Initialized node {}", node_id));
-                    node.next_msg_id += 1;
-                    let body = MessageBody::ResponseInitOk{ 
-                            in_reply_to: msg_id, 
-                                msg_id: node.next_msg_id,  
-                                node_id:  node.node_id.clone().unwrap(), 
-                                node_ids : node.node_ids.clone().into_iter().filter_map(|x| x).collect(),
-                            };
-                    node.send(req.src, body);
-                    Ok(())
-                },
-                _ => {
-                    node.log(format!("matching on wrong request type"));
-                    Err("matching on wrong request type".to_string())
-                },
-            }
-        });
-    }
-
-    fn add_echo_handler(&mut self){
-        self.on("echo".to_string(), |node: &mut Node, req: Message|{
-            match req.body {
-                MessageBody::RequestEcho { msg_id, echo } => {
-                    if Some(req.dest.as_str()) == node.node_id.as_deref(){
-                        node.log(format!("Echoing: {}", &echo));
-                        node.next_msg_id +=1;
-                        let body =  MessageBody::ResponseEchoOk { 
-                                in_reply_to: msg_id, 
-                                echo,
-                                msg_id: node.next_msg_id, 
-                                };
-                        node.send(req.src, body);
-                    } 
-                    Ok(())
-                },
-                _ => {
-                    node.log(format!("matching on wrong request type"));
-                    Err("matching on wrong request type".to_string())
-                },
-            }
-        });
-
-    }
-
-    pub fn main(&mut self){
-        let mut stdin = io::stdin();
-
-        for line in stdin.lock().lines(){
+    pub fn main_loop(&mut self) {
+        let stdin = io::stdin();
+        std::panic::set_hook(
+            Box::new(|info| {
+                eprintln!("PANIC: {:?}", info);
+            })
+        );
+        for line in stdin.lock().lines() {
             match line {
                 Ok(input) => {
-                    match serde_json::from_str::<Message>(&input){
-                        Ok(request) => {
-                            let msg_type = request.msg_type().to_string();
-                            if let Some(handler) = self.handle(msg_type.clone()){
-                                handler.lock().unwrap()(self, request).expect(format!("Failed to process request {:?}", &msg_type).as_str())
-                            }
-                        },
-                        Err(e) => {
-                            self.log(format!("Error parsing request: {}", e));
-                        }
-
+                    match serde_json::from_str::<Message>(&input) {
+                        Ok(msg) => self.handle_message(msg),
+                        Err(e) => self.log(format!("Error parsing message: {}", e)),
                     }
                 }
-                Err(e) => {
-                    self.log(format!("Error reading line: {}", e));
-                }
+                Err(e) => self.log(format!("Error reading input: {}", e)),
             }
         }
-
     }
-        
-            
 }
-
-
